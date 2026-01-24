@@ -117,6 +117,7 @@ const crawler = new PlaywrightCrawler({
         const seenIds = new Set();
         let loopCount = 0;
         const MAX_LOOPS = 50;
+        let stalledPaginationAttempts = 0;
 
         while (savedCount < RESULTS_WANTED && loopCount < MAX_LOOPS) {
             loopCount++;
@@ -207,18 +208,26 @@ const crawler = new PlaywrightCrawler({
                 log.info('No new reviews found in this loop.');
             }
 
+            if (newReviews.length > 0) {
+                stalledPaginationAttempts = 0;
+            }
+
             if (savedCount >= RESULTS_WANTED) break;
 
-            // Pagination: Click "Show more reviews"
+            // Pagination: Click "Show more reviews" (or navigate next) until results end
             try {
                 await cleanOverlays(); // Ensure nothing is blocking right before click
 
-                const loadMoreBtn = page.locator('button:has-text("Show more reviews"), button[class*="Button"]:has-text("Show more")').first();
+                const loadMoreBtn = page
+                    .locator('button:has-text("Show more reviews"), button[data-testid="loadMore"], button[class*="Button"]:has-text("Show more")')
+                    .first();
+                const nextPageLink = page.locator('a[rel="next"], a[aria-label*="next"], button[aria-label*="next"]');
+                const loadMoreVisible = await loadMoreBtn.isVisible().catch(() => false);
 
-                if (await loadMoreBtn.isVisible()) {
+                if (loadMoreVisible) {
                     log.info('Clicking "Show more reviews"...');
 
-                    const prevCount = await page.evaluate(() => document.querySelectorAll('article.ReviewCard').length);
+                    const knownIdsSnapshot = Array.from(seenIds);
 
                     await loadMoreBtn.scrollIntoViewIfNeeded();
                     try {
@@ -232,19 +241,63 @@ const crawler = new PlaywrightCrawler({
                         });
                     }
 
-                    // Wait for new content
-                    try {
-                        await page.waitForFunction(
-                            (count) => document.querySelectorAll('article.ReviewCard').length > count,
-                            prevCount,
+                    const newContentAppeared = await page
+                        .waitForFunction(
+                            (knownIds) => {
+                                const cards = Array.from(document.querySelectorAll('article.ReviewCard'));
+
+                                const ids = cards
+                                    .map((card, idx) => {
+                                        const urlPath = card
+                                            .querySelector('.ReviewCard__content a[href*="/review/show"]')
+                                            ?.getAttribute('href');
+                                        const name = card.querySelector('.ReviewerProfile__name a, [data-testid="name"]')
+                                            ?.innerText;
+                                        const id = urlPath
+                                            ? new URL(urlPath, document.location.origin).href
+                                            : name
+                                                ? `review-${name}-${idx}`
+                                                : null;
+                                        return id;
+                                    })
+                                    .filter(Boolean);
+
+                                if (ids.length > knownIds.length) return true;
+                                return ids.some((id) => !knownIds.includes(id));
+                            },
+                            knownIdsSnapshot,
                             { timeout: 15000 }
-                        );
-                        await page.waitForTimeout(1000);
-                    } catch (e) {
-                        log.warning('Timed out waiting for new reviews after click.');
-                        const newCount = await page.evaluate(() => document.querySelectorAll('article.ReviewCard').length);
-                        if (newCount <= prevCount) break;
+                        )
+                        .catch(() => false);
+
+                    if (!newContentAppeared) {
+                        stalledPaginationAttempts++;
+                        log.warning('Pagination click did not surface new review cards; retrying.');
+
+                        if (stalledPaginationAttempts >= 3) {
+                            log.info('Stopping pagination after repeated empty attempts.');
+                            break;
+                        }
+
+                        await page.waitForTimeout(1500);
+                        continue;
                     }
+
+                    stalledPaginationAttempts = 0;
+                    await page.waitForTimeout(800);
+                    continue;
+                }
+
+                // Fallback: plain next link if present
+                if (await nextPageLink.isVisible().catch(() => false)) {
+                    log.info('Navigating to the next reviews page...');
+                    await Promise.all([
+                        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null),
+                        nextPageLink.click({ timeout: 5000 }),
+                    ]);
+                    stalledPaginationAttempts = 0;
+                    await page.waitForTimeout(1000);
+                    continue;
                 } else {
                     log.info('No more reviews to load.');
                     break;

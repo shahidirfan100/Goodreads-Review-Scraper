@@ -5,6 +5,9 @@
   "buildTag": "latest",
   "dockerfile": "../Dockerfile",
   "readme": "../README.md",
+  "meta": {
+    "generatedBy": "gpt-5"
+  },
   "input": "./input_schema.json",
   "output": "./output_schema.json",
   "nodeJsVersion": "22",
