@@ -53,6 +53,7 @@ Each review item in the dataset contains:
 | `rating` | Number | Star rating given (1 to 5). |
 | `date` | String | The date the review was published. |
 | `review_text` | String | The full content of the review. |
+| `helpful_count` | Number | Number of likes/helpful votes. |
 | `review_url` | String | Direct link to the specific review. |
 | `book_url` | String | The URL of the book being reviews. |
 

@@ -51,15 +51,35 @@ const crawler = new PlaywrightCrawler({
 
     preNavigationHooks: [
         async ({ page }) => {
-            // Block heavy resources
+            // Block heavy resources and tracking
             await page.route('**/*', (route) => {
-                const type = route.request().resourceType();
-                const url = route.request().url();
-                if (['image', 'font', 'media'].includes(type) ||
-                    url.includes('google-analytics') ||
-                    url.includes('googletagmanager')) {
+                const request = route.request();
+                const type = request.resourceType();
+                const url = request.url();
+
+                // Block heavy content
+                if (['image', 'media', 'font', 'stylesheet'].includes(type) && !url.includes('goodreads')) {
+                    // Be careful with stylesheets, goodreads needs them for layout-dependent text visibility sometimes, 
+                    // but purely text-based extraction might be fine. 
+                    // Let's safe-list goodreads CSS if we block it, but usually blocking all external is safer.
+                    // The user requested to "make playwright light", so we block aggressively.
+                }
+
+                if (['image', 'media', 'font'].includes(type)) {
                     return route.abort();
                 }
+
+                // Block known trackers/ads
+                if (url.includes('amazon-ad-system') ||
+                    url.includes('googletagservices') ||
+                    url.includes('google-analytics') ||
+                    url.includes('doubleclick') ||
+                    url.includes('facebook') ||
+                    url.includes('criteo') ||
+                    url.includes('scorecardresearch')) {
+                    return route.abort();
+                }
+
                 return route.continue();
             });
 
@@ -75,9 +95,9 @@ const crawler = new PlaywrightCrawler({
 
         await page.waitForLoadState('domcontentloaded');
 
-        // Close any "SignIn" modal if it appears (common on Goodreads)
+        // Close any "SignIn" modal if it appears
         try {
-            const closeBtn = page.locator('[aria-label="Close"]');
+            const closeBtn = page.locator('[aria-label="Close"], button[class*="Overlay__close"]').first();
             if (await closeBtn.isVisible({ timeout: 2000 })) {
                 await closeBtn.click();
             }
@@ -86,49 +106,25 @@ const crawler = new PlaywrightCrawler({
         let savedCount = 0;
         const seenIds = new Set();
         let loopCount = 0;
-        const MAX_LOOPS = 50; // Safety break
+        const MAX_LOOPS = 50;
 
         while (savedCount < RESULTS_WANTED && loopCount < MAX_LOOPS) {
             loopCount++;
             log.info(`Scraping loop ${loopCount}, saved so far: ${savedCount}`);
 
-            // Hybrid Extraction Strategy
+            // DOM-only Extraction Strategy (more reliable for full fields)
             const reviews = await page.evaluate(() => {
                 const extracted = [];
-
-                // 1. Try __NEXT_DATA__ (Apollo State)
-                try {
-                    const nextDataScript = document.getElementById('__NEXT_DATA__');
-                    if (nextDataScript) {
-                        const json = JSON.parse(nextDataScript.innerText);
-                        const apolloState = json.props?.pageProps?.apolloState || {};
-
-                        Object.entries(apolloState).forEach(([key, val]) => {
-                            if (key.startsWith('Review:')) {
-                                extracted.push({
-                                    id: key,
-                                    reviewerName: val.creator?.name,
-                                    rating: val.rating,
-                                    date: val.createdAt, // Or similar field
-                                    text: val.text, // Often full text
-                                    url: val.webUrl,
-                                    source: 'apollo'
-                                });
-                            }
-                        });
-                    }
-                } catch (e) {
-                    // console.error('NextData parse error', e);
-                }
-
-                // 2. Fallback/Supplement with DOM
                 const reviewCards = document.querySelectorAll('article.ReviewCard');
+
                 reviewCards.forEach((card, idx) => {
-                    const name = card.querySelector('[data-testid="name"], .ReviewerProfile__name')?.innerText;
+                    const name = card.querySelector('.ReviewerProfile__name a, [data-testid="name"]')?.innerText;
+
                     const ratingLabel = card.querySelector('.RatingStars')?.getAttribute('aria-label'); // "Rating 4 out of 5"
-                    const ratingMatch = ratingLabel?.match(/Rating (\d+) out of 5/);
+                    const ratingMatch = ratingLabel?.match(/Rating (\d+(\.\d+)?) out of 5/);
                     const rating = ratingMatch ? parseFloat(ratingMatch[1]) : null;
-                    const date = card.querySelector('.ReviewCard__content a[href*="/review/show"]')?.innerText;
+
+                    const date = card.querySelector('.ReviewCard__contentHeader a, [data-testid="contentHeader"] a')?.innerText;
 
                     // Prioritize full text if available
                     let text = card.querySelector('.ReviewText__content--full')?.innerText;
@@ -136,8 +132,24 @@ const crawler = new PlaywrightCrawler({
                         text = card.querySelector('.ReviewText__content')?.innerText;
                     }
 
-                    const url = card.querySelector('.ReviewCard__content a[href*="/review/show"]')?.href;
-                    const id = url || `dom-review-${idx}`;
+                    // Helpful Count (Likes)
+                    // Selector: .SocialFooter__stats button -> check text for "likes"
+                    let helpfulCount = 0;
+                    const statsButtons = card.querySelectorAll('.SocialFooter__stats button, [class*="SocialFooter"] button');
+                    statsButtons.forEach(btn => {
+                        const btnText = btn.innerText || '';
+                        if (btnText.includes('likes') || btnText.includes('like')) {
+                            const countMatch = btnText.match(/(\d+)/);
+                            if (countMatch) {
+                                helpfulCount = parseInt(countMatch[1], 10);
+                            }
+                        }
+                    });
+
+                    const urlPath = card.querySelector('.ReviewCard__content a[href*="/review/show"]')?.getAttribute('href');
+                    const url = urlPath ? new URL(urlPath, document.location.origin).href : null;
+
+                    const id = url || `dom-review-${Date.now()}-${idx}`;
 
                     if (name) {
                         extracted.push({
@@ -147,6 +159,7 @@ const crawler = new PlaywrightCrawler({
                             date,
                             text,
                             url,
+                            helpfulCount,
                             source: 'dom'
                         });
                     }
@@ -160,12 +173,12 @@ const crawler = new PlaywrightCrawler({
             for (const r of reviews) {
                 if (!seenIds.has(r.id)) {
                     seenIds.add(r.id);
-                    // Normalize
                     newReviews.push({
                         reviewer_name: r.reviewerName,
                         rating: r.rating,
                         date: r.date,
                         review_text: r.text,
+                        helpful_count: r.helpfulCount,
                         review_url: r.url,
                         book_url: request.url
                     });
