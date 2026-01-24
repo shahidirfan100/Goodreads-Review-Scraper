@@ -27,12 +27,6 @@
       "minimum": 1,
       "maximum": 5
     },
-    "debugLog": {
-      "title": "Debug Log",
-      "type": "boolean",
-      "description": "Enable verbose logging.",
-      "default": false
-    },
     "proxyConfiguration": {
       "title": "Proxy configuration",
       "type": "object",
