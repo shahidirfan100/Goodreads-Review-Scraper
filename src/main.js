@@ -95,13 +95,23 @@ const crawler = new PlaywrightCrawler({
 
         await page.waitForLoadState('domcontentloaded');
 
-        // Close any "SignIn" modal if it appears
+        // Wait for first batch of reviews to actually appear in the DOM
         try {
-            const closeBtn = page.locator('[aria-label="Close"], button[class*="Overlay__close"]').first();
-            if (await closeBtn.isVisible({ timeout: 2000 })) {
-                await closeBtn.click();
-            }
-        } catch { }
+            await page.waitForSelector('article.ReviewCard', { timeout: 15000 });
+        } catch (e) {
+            log.warning('Timed out waiting for ReviewCard selector. The page might be empty or blocked.');
+        }
+
+        // Helper to remove any and all overlays that might block interactions
+        const cleanOverlays = async () => {
+            await page.evaluate(() => {
+                const overlays = document.querySelectorAll('.Overlay, [class*="Overlay"], [class*="Modal"], [class*="onboarding"]');
+                overlays.forEach(el => el.remove());
+                document.body.style.overflow = 'auto'; // Re-enable scrolling if modal disabled it
+            }).catch(() => { });
+        };
+
+        await cleanOverlays();
 
         let savedCount = 0;
         const seenIds = new Set();
@@ -133,7 +143,6 @@ const crawler = new PlaywrightCrawler({
                     }
 
                     // Helpful Count (Likes)
-                    // Selector: .SocialFooter__stats button -> check text for "likes"
                     let helpfulCount = 0;
                     const statsButtons = card.querySelectorAll('.SocialFooter__stats button, [class*="SocialFooter"] button');
                     statsButtons.forEach(btn => {
@@ -149,7 +158,8 @@ const crawler = new PlaywrightCrawler({
                     const urlPath = card.querySelector('.ReviewCard__content a[href*="/review/show"]')?.getAttribute('href');
                     const url = urlPath ? new URL(urlPath, document.location.origin).href : null;
 
-                    const id = url || `dom-review-${Date.now()}-${idx}`;
+                    // Stable ID: Use URL or combined name/rating/index (avoid Date.now)
+                    const id = url || `review-${name}-${idx}`;
 
                     if (name) {
                         extracted.push({
@@ -187,66 +197,65 @@ const crawler = new PlaywrightCrawler({
 
             if (newReviews.length > 0) {
                 const remaining = RESULTS_WANTED - savedCount;
-                const toSave = newReviews.slice(0, remaining);
-                await Dataset.pushData(toSave);
-                savedCount += toSave.length;
-                log.info(`Extracted ${toSave.length} new reviews.`);
-            } else if (loopCount > 1) {
-                // If we've looped and found 0 new reviews despite clicking load more (and presumably waiting), 
-                // we might be stuck or the button isn't working naturally.
-                log.warning('No new reviews found in this loop. Checking strictly...');
+                const toSave = newReviews.slice(0, Math.max(0, remaining));
+                if (toSave.length > 0) {
+                    await Dataset.pushData(toSave);
+                    savedCount += toSave.length;
+                    log.info(`Saved ${toSave.length} new reviews from total extracted ${newReviews.length}. Total saved: ${savedCount}`);
+                }
+            } else {
+                log.info('No new reviews found in this loop.');
             }
 
             if (savedCount >= RESULTS_WANTED) break;
 
             // Pagination: Click "Show more reviews"
             try {
-                // Selector for the "Show more reviews" button. 
+                await cleanOverlays(); // Ensure nothing is blocking right before click
+
                 const loadMoreBtn = page.locator('button:has-text("Show more reviews"), button[class*="Button"]:has-text("Show more")').first();
 
                 if (await loadMoreBtn.isVisible()) {
                     log.info('Clicking "Show more reviews"...');
 
-                    // Track current count to verify load
                     const prevCount = await page.evaluate(() => document.querySelectorAll('article.ReviewCard').length);
 
                     await loadMoreBtn.scrollIntoViewIfNeeded();
                     try {
-                        await loadMoreBtn.click({ timeout: 5000 });
+                        // Attempt a forceful click via Playwright, then fallback to JS click
+                        await loadMoreBtn.click({ timeout: 5000, force: true });
                     } catch (err) {
-                        log.warning(`Click failed: ${err.message}. Trying JS click.`);
-                        await page.evaluate((btn) => btn.click(), await loadMoreBtn.elementHandle());
+                        log.warning(`Click failed: ${err.message}. Trying direct JS click.`);
+                        await page.evaluate(() => {
+                            const btn = Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('Show more reviews') || b.innerText.includes('Show more'));
+                            if (btn) btn.click();
+                        });
                     }
 
-                    // Wait specifically for more reviews to appear
+                    // Wait for new content
                     try {
                         await page.waitForFunction(
                             (count) => document.querySelectorAll('article.ReviewCard').length > count,
                             prevCount,
                             { timeout: 15000 }
                         );
-                        // Optional: small settle time after new elements appear
                         await page.waitForTimeout(1000);
                     } catch (e) {
-                        log.warning('Timed out waiting for new reviews to render after click. possibly end of list or button issue.');
-                        // Double check if we really didn't get new items
+                        log.warning('Timed out waiting for new reviews after click.');
                         const newCount = await page.evaluate(() => document.querySelectorAll('article.ReviewCard').length);
-                        if (newCount <= prevCount) {
-                            log.info('No new items loaded. Stopping.');
-                            break;
-                        }
+                        if (newCount <= prevCount) break;
                     }
                 } else {
-                    log.info('No more "Show more reviews" button found.');
+                    log.info('No more reviews to load.');
                     break;
                 }
             } catch (e) {
-                log.warning('Pagination failed or ended: ' + e.message);
+                log.warning('Pagination failed: ' + e.message);
                 break;
             }
         }
 
-        log.info(`Finished ${request.url}. Total reviews scraped: ${savedCount}`);
+        log.info(`Finished processing ${request.url}. Final count: ${savedCount}`);
     },
 
     failedRequestHandler({ request }, error) {
