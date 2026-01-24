@@ -191,6 +191,10 @@ const crawler = new PlaywrightCrawler({
                 await Dataset.pushData(toSave);
                 savedCount += toSave.length;
                 log.info(`Extracted ${toSave.length} new reviews.`);
+            } else if (loopCount > 1) {
+                // If we've looped and found 0 new reviews despite clicking load more (and presumably waiting), 
+                // we might be stuck or the button isn't working naturally.
+                log.warning('No new reviews found in this loop. Checking strictly...');
             }
 
             if (savedCount >= RESULTS_WANTED) break;
@@ -198,18 +202,40 @@ const crawler = new PlaywrightCrawler({
             // Pagination: Click "Show more reviews"
             try {
                 // Selector for the "Show more reviews" button. 
-                // Often: span.Button__labelItem equal to "Show more reviews"
                 const loadMoreBtn = page.locator('button:has-text("Show more reviews"), button[class*="Button"]:has-text("Show more")').first();
 
                 if (await loadMoreBtn.isVisible()) {
                     log.info('Clicking "Show more reviews"...');
-                    await loadMoreBtn.scrollIntoViewIfNeeded();
-                    await loadMoreBtn.click();
 
-                    // Wait for new content. 
-                    // Strategy: Wait for network idle or a short delay if network is tricky
-                    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => Promise.resolve());
-                    await page.waitForTimeout(2000); // Specific human delay
+                    // Track current count to verify load
+                    const prevCount = await page.evaluate(() => document.querySelectorAll('article.ReviewCard').length);
+
+                    await loadMoreBtn.scrollIntoViewIfNeeded();
+                    try {
+                        await loadMoreBtn.click({ timeout: 5000 });
+                    } catch (err) {
+                        log.warning(`Click failed: ${err.message}. Trying JS click.`);
+                        await page.evaluate((btn) => btn.click(), await loadMoreBtn.elementHandle());
+                    }
+
+                    // Wait specifically for more reviews to appear
+                    try {
+                        await page.waitForFunction(
+                            (count) => document.querySelectorAll('article.ReviewCard').length > count,
+                            prevCount,
+                            { timeout: 15000 }
+                        );
+                        // Optional: small settle time after new elements appear
+                        await page.waitForTimeout(1000);
+                    } catch (e) {
+                        log.warning('Timed out waiting for new reviews to render after click. possibly end of list or button issue.');
+                        // Double check if we really didn't get new items
+                        const newCount = await page.evaluate(() => document.querySelectorAll('article.ReviewCard').length);
+                        if (newCount <= prevCount) {
+                            log.info('No new items loaded. Stopping.');
+                            break;
+                        }
+                    }
                 } else {
                     log.info('No more "Show more reviews" button found.');
                     break;
