@@ -1,0 +1,53 @@
+{
+  "actorSpecification": 1,
+  "fields": {},
+  "views": {
+    "overview": {
+      "title": "Overview",
+      "transformation": {
+        "fields": [
+          "reviewer_name",
+          "rating",
+          "date",
+          "review_text",
+          "helpful_count",
+          "review_url",
+          "book_url"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "reviewer_name": {
+            "label": "Reviewer",
+            "format": "text"
+          },
+          "rating": {
+            "label": "Rating",
+            "format": "text"
+          },
+          "date": {
+            "label": "Date",
+            "format": "text"
+          },
+          "review_text": {
+            "label": "Review",
+            "format": "text"
+          },
+          "helpful_count": {
+            "label": "Helpful",
+            "format": "text"
+          },
+          "review_url": {
+            "label": "Review URL",
+            "format": "text"
+          },
+          "book_url": {
+            "label": "Book URL",
+            "format": "text"
+          }
+        }
+      }
+    }
+  }
+}

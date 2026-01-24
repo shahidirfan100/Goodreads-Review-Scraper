@@ -1,0 +1,58 @@
+{
+  "title": "Goodreads Review Scraper",
+  "description": "Scrape book reviews from Goodreads. Provide a Goodreads book reviews URL (e.g., https://www.goodreads.com/book/show/2767052-the-catcher-in-the-rye/reviews). Actor paginates through reviews and extracts reviewer information, ratings, dates, and review text.",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "start_url": {
+      "title": "Start URL",
+      "type": "string",
+      "description": "Goodreads book reviews page URL",
+      "editor": "textfield",
+      "prefill": "https://www.goodreads.com/book/show/2767052-the-catcher-in-the-rye/reviews"
+    },
+    "startUrls": {
+      "title": "Start URLs (alternative)",
+      "type": "array",
+      "description": "Array of Goodreads book review page URLs",
+      "editor": "requestListSources",
+      "default": []
+    },
+    "results_wanted": {
+      "title": "Maximum number of reviews",
+      "type": "integer",
+      "description": "The maximum number of reviews to collect.",
+      "minimum": 1,
+      "default": 20,
+      "editor": "number"
+    },
+    "maxConcurrency": {
+      "title": "Max Concurrency",
+      "type": "integer",
+      "description": "Maximum number of browser pages opened in parallel.",
+      "default": 2,
+      "minimum": 1,
+      "maximum": 5
+    },
+    "debugLog": {
+      "title": "Debug Log",
+      "type": "boolean",
+      "description": "Enable verbose logging.",
+      "default": false
+    },
+    "proxyConfiguration": {
+      "title": "Proxy configuration",
+      "type": "object",
+      "description": "Use Apify Proxy (residential recommended for Goodreads).",
+      "editor": "proxy",
+      "default": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": [
+          "RESIDENTIAL"
+        ]
+      }
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}
