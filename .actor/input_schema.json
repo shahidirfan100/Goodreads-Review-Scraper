@@ -4,13 +4,6 @@
   "type": "object",
   "schemaVersion": 1,
   "properties": {
-    "start_url": {
-      "title": "Start URL",
-      "type": "string",
-      "description": "Goodreads book reviews page URL",
-      "editor": "textfield",
-      "prefill": "https://www.goodreads.com/book/show/2767052-the-catcher-in-the-rye/reviews"
-    },
     "startUrls": {
       "title": "Start URLs (alternative)",
       "type": "array",
