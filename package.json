@@ -1,6 +1,6 @@
 {
   "name": "goodreads-review-scraper",
-  "version": "1.0",
+  "version": "1.1.0",
   "description": "Goodreads review scraper using Playwright Chrome.",
   "type": "module",
   "dependencies": {

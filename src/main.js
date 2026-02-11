@@ -5,6 +5,9 @@ import { PlaywrightCrawler, Dataset } from 'crawlee';
 await Actor.init();
 
 const input = (await Actor.getInput()) || {};
+const BUILD_MARKER = 'date-fix-2026-02-11';
+log.info(`Build marker: ${BUILD_MARKER}`);
+
 const {
     start_url: START_URL = 'https://www.goodreads.com/book/show/2767052-the-catcher-in-the-rye/reviews',
     results_wanted: RESULTS_WANTED_RAW = 20,
@@ -148,14 +151,15 @@ const crawler = new PlaywrightCrawler({
                 };
 
                 const formatTimestamp = (value) => {
-                    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
+                    const numericValue = typeof value === 'string' ? Number(value) : value;
+                    if (typeof numericValue !== 'number' || !Number.isFinite(numericValue) || numericValue <= 0) return null;
                     try {
                         return new Intl.DateTimeFormat('en-US', {
                             month: 'short',
                             day: 'numeric',
                             year: 'numeric',
                             timeZone: 'UTC',
-                        }).format(new Date(value));
+                        }).format(new Date(numericValue));
                     } catch {
                         return null;
                     }
@@ -179,7 +183,11 @@ const crawler = new PlaywrightCrawler({
                         const nextData = JSON.parse(nextDataScript.textContent);
                         const apolloState = nextData?.props?.pageProps?.apolloState || {};
                         const rootQuery = apolloState?.ROOT_QUERY || {};
-                        const reviewsConnection = rootQuery?.getReviews;
+                        const reviewsConnection =
+                            rootQuery?.getReviews
+                            || Object.entries(rootQuery).find(([key, value]) =>
+                                /^getReviews\b/.test(key) && Array.isArray(value?.edges)
+                            )?.[1];
                         const edges = Array.isArray(reviewsConnection?.edges) ? reviewsConnection.edges : [];
 
                         for (const edge of edges) {
