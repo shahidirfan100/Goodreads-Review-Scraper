@@ -123,19 +123,127 @@ const crawler = new PlaywrightCrawler({
             loopCount++;
             log.info(`Scraping loop ${loopCount}, saved so far: ${savedCount}`);
 
-            // DOM-only Extraction Strategy (more reliable for full fields)
+            // API-first extraction with DOM fallback.
             const reviews = await page.evaluate(() => {
                 const extracted = [];
+                const seenInBatch = new Set();
+
+                const monthDateRegex = /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2},\s+\d{4}\b/i;
+                const numericDateRegex = /\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/;
+
+                const normalizeString = (value) => {
+                    if (typeof value !== 'string') return null;
+                    const cleaned = value.replace(/\s+/g, ' ').trim();
+                    return cleaned || null;
+                };
+
+                const findDateInText = (value) => {
+                    const text = normalizeString(value);
+                    if (!text) return null;
+                    const monthMatch = text.match(monthDateRegex);
+                    if (monthMatch) return monthMatch[0];
+                    const numericMatch = text.match(numericDateRegex);
+                    if (numericMatch) return numericMatch[0];
+                    return null;
+                };
+
+                const formatTimestamp = (value) => {
+                    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
+                    try {
+                        return new Intl.DateTimeFormat('en-US', {
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric',
+                            timeZone: 'UTC',
+                        }).format(new Date(value));
+                    } catch {
+                        return null;
+                    }
+                };
+
+                const htmlToText = (value) => {
+                    const text = normalizeString(value);
+                    if (!text) return null;
+
+                    if (!/[<>]/.test(text)) return text;
+
+                    const parser = document.createElement('div');
+                    parser.innerHTML = text;
+                    return normalizeString(parser.textContent);
+                };
+
+                // Priority 1: __NEXT_DATA__ / Apollo state (API-first)
+                try {
+                    const nextDataScript = document.querySelector('script#__NEXT_DATA__');
+                    if (nextDataScript?.textContent) {
+                        const nextData = JSON.parse(nextDataScript.textContent);
+                        const apolloState = nextData?.props?.pageProps?.apolloState || {};
+                        const rootQuery = apolloState?.ROOT_QUERY || {};
+                        const reviewsConnection = rootQuery?.getReviews;
+                        const edges = Array.isArray(reviewsConnection?.edges) ? reviewsConnection.edges : [];
+
+                        for (const edge of edges) {
+                            const ref = edge?.node?.__ref;
+                            if (!ref) continue;
+
+                            const review = apolloState[ref];
+                            if (!review) continue;
+
+                            const userRef = review?.creator?.__ref;
+                            const user = userRef ? apolloState[userRef] : null;
+                            const reviewerName = normalizeString(user?.name);
+                            if (!reviewerName) continue;
+
+                            const reviewUrl = normalizeString(review?.shelving?.webUrl);
+                            const id = reviewUrl || normalizeString(review?.id) || `${reviewerName}-${review?.createdAt || ''}`;
+                            if (!id || seenInBatch.has(id)) continue;
+                            seenInBatch.add(id);
+
+                            extracted.push({
+                                id,
+                                reviewerName,
+                                rating: typeof review?.rating === 'number' ? review.rating : null,
+                                date: formatTimestamp(review?.createdAt),
+                                text: htmlToText(review?.text),
+                                url: reviewUrl && reviewUrl.includes('/review/show/') ? reviewUrl : null,
+                                helpfulCount: Number.isFinite(review?.likeCount) ? review.likeCount : 0,
+                                source: 'next_data',
+                            });
+                        }
+                    }
+                } catch {
+                    // Keep crawling using DOM extraction fallback.
+                }
+
                 const reviewCards = document.querySelectorAll('article.ReviewCard');
 
                 reviewCards.forEach((card, idx) => {
-                    const name = card.querySelector('.ReviewerProfile__name a, [data-testid="name"]')?.innerText;
+                    const name = normalizeString(card.querySelector('.ReviewerProfile__name a, [data-testid="name"]')?.innerText);
 
                     const ratingLabel = card.querySelector('.RatingStars')?.getAttribute('aria-label'); // "Rating 4 out of 5"
                     const ratingMatch = ratingLabel?.match(/Rating (\d+(\.\d+)?) out of 5/);
                     const rating = ratingMatch ? parseFloat(ratingMatch[1]) : null;
 
-                    const date = card.querySelector('.ReviewCard__contentHeader a, [data-testid="contentHeader"] a')?.innerText;
+                    const timeDateRaw = card.querySelector('time[datetime]')?.getAttribute('datetime');
+                    let date = timeDateRaw ? formatTimestamp(new Date(timeDateRaw).getTime()) : null;
+
+                    if (!date) {
+                        const dateCandidates = [
+                            card.querySelector('.ReviewCard__contentHeader a')?.innerText,
+                            card.querySelector('.ReviewCard__contentHeader span')?.innerText,
+                            card.querySelector('[data-testid="contentHeader"] a')?.innerText,
+                            card.querySelector('[data-testid="contentHeader"] span')?.innerText,
+                            card.querySelector('[data-testid*="date" i]')?.innerText,
+                            card.innerText,
+                        ];
+                        for (const candidate of dateCandidates) {
+                            const parsedDate = findDateInText(candidate);
+                            if (parsedDate) {
+                                date = parsedDate;
+                                break;
+                            }
+                        }
+                    }
 
                     // Prioritize full text if available
                     let text = card.querySelector('.ReviewText__content--full')?.innerText;
@@ -160,9 +268,10 @@ const crawler = new PlaywrightCrawler({
                     const url = urlPath ? new URL(urlPath, document.location.origin).href : null;
 
                     // Stable ID: Use URL or combined name/rating/index (avoid Date.now)
-                    const id = url || `review-${name}-${idx}`;
+                    const id = url || `review-${name || 'unknown'}-${idx}`;
 
-                    if (name) {
+                    if (name && !seenInBatch.has(id)) {
+                        seenInBatch.add(id);
                         extracted.push({
                             id,
                             reviewerName: name,
@@ -184,10 +293,14 @@ const crawler = new PlaywrightCrawler({
             for (const r of reviews) {
                 if (!seenIds.has(r.id)) {
                     seenIds.add(r.id);
+                    const normalizedDate = typeof r.date === 'string' && r.date.trim()
+                        ? r.date.trim()
+                        : null;
+
                     newReviews.push({
                         reviewer_name: r.reviewerName,
                         rating: r.rating,
-                        date: r.date,
+                        date: normalizedDate,
                         review_text: r.text,
                         helpful_count: r.helpfulCount,
                         review_url: r.url,
