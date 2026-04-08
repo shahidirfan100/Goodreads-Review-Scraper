@@ -33,10 +33,7 @@
       "description": "Use Apify Proxy (residential recommended for Goodreads).",
       "editor": "proxy",
       "default": {
-        "useApifyProxy": true,
-        "apifyProxyGroups": [
-          "RESIDENTIAL"
-        ]
+        "useApifyProxy": false
       }
     }
   },
