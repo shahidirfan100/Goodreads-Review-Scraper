@@ -1,98 +1,83 @@
-# Goodreads Review Scraper
+## What does Goodreads Review Scraper do?
 
-Extract comprehensive book reviews and reader feedback from Goodreads with ease. Collect detailed reviewer information, star ratings, and full review content at scale. Perfect for market research, sentiment analysis, and building literary datasets.
+Goodreads Review Scraper collects book reviews and reader feedback from public Goodreads book review pages. Paste a Goodreads book reviews URL such as `https://www.goodreads.com/book/show/2767052-the-catcher-in-the-rye/reviews`, choose how many reviews you need, and the Actor saves reviewer names, profile URLs, star ratings, review dates, full review text, helpful and comment counts, review URLs, and book details into a clean dataset. It automatically loads all available reviews until your target count is reached, so you can build ready-to-use datasets for market research, sentiment analysis, and reader feedback tracking without manual copy-paste.
 
----
+The Actor talks directly to the same GraphQL API that powers the Goodreads reviews page, so it needs no browser, is fast, and is much harder to block than HTML scraping. It emulates a Chrome browser over TLS, sends realistic cross-origin fetch headers and a persistent cookie session, and auto-retries transient failures, so runs stay smooth and under the radar.
 
-## Features
+## Why use Goodreads Review Scraper?
 
-- **Deep Data Extraction** — Capture names, ratings, and full review text from any book page.
-- **Automated Pagination** — Automatically scroll and load all available reviews without manual effort.
-- **Reliable Performance** — Built-in protection to ensure consistent data collection from protected pages.
-- **Optimized Bandwidth** — Intelligent resource handling for faster execution and lower costs.
-- **Flexible Results** — Set specific limits on how many reviews you need for your analysis.
+- **Reliable dataset creation** - Collect structured review data from Goodreads without manual copy-paste or endless scrolling.
+- **Automation-ready output** - Export results to JSON, CSV, Excel, XML, or connect them to your data tools.
+- **Use-case fit** - Supports market research, sentiment analysis, competitive intelligence, and AI and RAG data collection.
 
----
+## What data can you extract from Goodreads?
 
-## Use Cases
+| Field                  | Description                                          |
+| ---------------------- | ---------------------------------------------------- |
+| `review_id`            | Unique identifier of the review                      |
+| `reviewer_name`        | Name of the person who wrote the review              |
+| `reviewer_profile_url` | Goodreads profile URL of the reviewer                |
+| `rating`               | Star rating given by the reader (1 to 5)             |
+| `date`                 | Date the review was published                        |
+| `review_text`          | Full text of the review                              |
+| `helpful_count`        | Number of likes or helpful votes the review received |
+| `comment_count`        | Number of comments on the review                     |
+| `review_url`           | Direct link to the original review                   |
+| `book_url`             | Goodreads URL the review was collected from          |
+| `book_title`           | Title of the book the review belongs to              |
+| `book_id`              | Internal identifier of the book                      |
 
-### Market Research for Authors
-Analyze reader feedback on similar titles to understand audience expectations, common tropes they love, and frequent complaints they have.
+## How to use Goodreads Review Scraper
 
-### Sentiment Analysis
-Gather large-scale textual data for NLP models to determine reader sentiment trends across different genres or publication years.
-
-### Competitor Intelligence
-Track how readers respond to competing book releases in real-time to adjust your marketing and positioning strategies.
-
-### Data-Driven Recommendations
-Build comprehensive datasets of user preferences to power custom recommendation engines and literary apps.
-
----
+1. Open the Actor on Apify Store.
+2. Add one or more Goodreads book reviews page URLs.
+3. Set the maximum number of reviews to collect.
+4. Run the Actor.
+5. Download the dataset or connect it to your workflow.
 
 ## Input Parameters
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `start_url` | String | Yes | — | Goodreads book reviews page URL to start collecting from. |
-| `startUrls` | Array | No | `[]` | List of multiple Goodreads book review page URLs for bulk processing. |
-| `results_wanted` | Integer | No | `20` | The maximum number of reviews to collect per book. |
-| `maxConcurrency` | Integer | No | `2` | Maximum parallel instances for faster collection. |
-| `debugLog` | Boolean | No | `false` | Enable detailed logging for troubleshooting. |
-| `proxyConfiguration` | Object | No | `{"useApifyProxy": true, "apifyProxyGroups": ["RESIDENTIAL"]}` | Proxy settings (recommended for reliability). |
-
----
-
-## Output Data
-
-Each review item in the dataset contains:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `reviewer_name` | String | The name of the person who wrote the review. |
-| `rating` | Number | Star rating given (1 to 5). |
-| `date` | String | The date the review was published. |
-| `review_text` | String | The full content of the review. |
-| `helpful_count` | Number | Number of likes/helpful votes. |
-| `review_url` | String | Direct link to the specific review. |
-| `book_url` | String | The URL of the book being reviews. |
-
----
+| Parameter            | Type    | Required | Default                    | Description                                                                                               |
+| -------------------- | ------- | -------- | -------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `startUrls`          | Array   | No       | `[]`                       | One or more Goodreads book reviews page URLs to collect from. Provide at least one URL for useful results |
+| `results_wanted`     | Integer | No       | `20`                       | Maximum number of reviews to collect per book                                                             |
+| `proxyConfiguration` | Object  | No       | `{"useApifyProxy": false}` | Proxy settings; residential proxies are recommended for large runs                                        |
 
 ## Usage Examples
 
 ### Basic Review Extraction
 
-Collect the first 50 reviews for a specific book:
+Collect the first 20 reviews for one book:
 
 ```json
 {
-    "start_url": "https://www.goodreads.com/book/show/2767052-the-catcher-in-the-rye/reviews",
-    "results_wanted": 50
+    "startUrls": ["https://www.goodreads.com/book/show/2767052-the-catcher-in-the-rye/reviews"],
+    "results_wanted": 20
 }
 ```
 
-### Bulk Collection
+### Collect Reviews for Multiple Books
 
-Gather reviews for multiple books simultaneously:
+Gather reviews for several books in a single run:
 
 ```json
 {
     "startUrls": [
         "https://www.goodreads.com/book/show/2767052-the-catcher-in-the-rye/reviews",
-        "https://www.goodreads.com/book/show/1/reviews"
+        "https://www.goodreads.com/book/show/4671-the-great-gatsby/reviews",
+        "https://www.goodreads.com/book/show/1885-pride-and-prejudice/reviews"
     ],
-    "results_wanted": 100
+    "results_wanted": 50
 }
 ```
 
-### High-Volume Analysis
+### High-Volume Collection
 
-Large scale extraction using enhanced proxy settings for maximum reliability:
+Collect a large review dataset with residential proxies:
 
 ```json
 {
-    "start_url": "https://www.goodreads.com/book/show/4671-the-great-gatsby/reviews",
+    "startUrls": ["https://www.goodreads.com/book/show/2767052-the-catcher-in-the-rye/reviews"],
     "results_wanted": 1000,
     "proxyConfiguration": {
         "useApifyProxy": true,
@@ -101,89 +86,82 @@ Large scale extraction using enhanced proxy settings for maximum reliability:
 }
 ```
 
----
-
 ## Sample Output
 
 ```json
 {
+    "review_id": "kca://review:goodreads/amzn1.gr.review:goodreads.v1.X123456",
     "reviewer_name": "Alexander",
+    "reviewer_profile_url": "https://www.goodreads.com/user/show/123456789-alexander",
     "rating": 5,
     "date": "Jan 15, 2024",
-    "review_text": "One of the most important books I have ever read. The character development is unparalleled and the themes remain timeless even decades later.",
+    "review_text": "One of the most important books I have ever read. The character development is unmatched and the themes remain relevant decades later.",
+    "helpful_count": 42,
+    "comment_count": 7,
     "review_url": "https://www.goodreads.com/review/show/123456789",
-    "book_url": "https://www.goodreads.com/book/show/2767052-the-catcher-in-the-rye/reviews"
+    "book_url": "https://www.goodreads.com/book/show/2767052-the-catcher-in-the-rye/reviews",
+    "book_title": "The Hunger Games",
+    "book_id": "kca://book/amzn1.gr.book.v1.YaoKZD8xVx72w5T1ZgR1YQ"
 }
 ```
 
----
-
 ## Tips for Best Results
 
-### Use High-Quality Proxies
-- Residential proxies are strongly recommended to ensure continuous data collection without interruptions.
-- These help maintain high success rates when collecting large volumes of data.
-
-### Test with Small Samples
-- Start with a small `results_wanted` (e.g., 20) to verify you are getting the data you need before running large jobs.
-- Adjust your parameters based on the initial output quality.
-
-### Manage Concurrency
-- Keep concurrency low (1-3) for the most reliable results.
-- Higher concurrency can be used for bulk tasks but monitor for any reduction in data quality.
-
----
+- Use complete public Goodreads reviews URLs that end in `/reviews`.
+- Start with a small `results_wanted` value to confirm the data looks correct before running large jobs.
+- For large datasets, residential proxies give the most reliable results.
+- Check the dataset preview before scheduling repeat runs.
+- Some reviews may not include a rating, date, review URL, or helpful count. These fields can be empty when the source does not publish that information.
+- The Actor filters out duplicate reviews and skips empty review entries automatically.
 
 ## Integrations
 
-Connect your Goodreads data with your favorite tools:
-
-- **Google Sheets** — Export directly to spreadsheets for easy analysis.
-- **Airtable** — Build a searchable database of book reviews.
-- **Slack** — Get real-time notifications for new reviews.
-- **Webhooks** — Automate workflows by sending data to custom endpoints.
-- **Make/Zapier** — Create complex automations with external apps.
-
-### Export Formats
-
-- **JSON** — Ready for developers and application use.
-- **CSV** — Ideal for Excel and manual analysis.
-- **Excel** — Professional business reporting format.
-- **XML** — For legacy system compatibility.
-
----
+- **Google Sheets** - Send scraped reviews to spreadsheets.
+- **Webhooks** - Trigger downstream workflows after each run.
+- **Make or Zapier** - Connect review data to no-code automations.
+- **API** - Access datasets programmatically from your own systems.
+- **CSV, Excel, JSON, XML** - Download results in the format that fits your workflow.
 
 ## Frequently Asked Questions
 
-### How many reviews can I collect?
-You can collect as many reviews as are publicly available. For books with thousands of reviews, be sure to use residential proxies for broad extraction.
+### Can I export the data to CSV or Excel?
 
-### Can I collect data for multiple books?
-Yes, use the `startUrls` parameter to provide a list of different books to scrape in a single run.
+Yes. Apify datasets can be downloaded in CSV, Excel, JSON, XML, and other supported formats.
 
-### Is the review text complete?
-Yes, the scraper is designed to capture the full text of reviews, including longer entries that may be truncated on the initial page view.
+### Can I run this Actor on a schedule?
 
-### Do I need to be logged in?
-No, this scraper works on publicly available data and does not require a Goodreads account or login credentials.
+Yes. You can schedule the Actor in Apify Console to refresh review data hourly, daily, weekly, or at another interval.
 
-### What happens if a book has no reviews?
-The actor will gracefully complete and an empty dataset or fewer results will be provided for that specific URL.
+### How many reviews can I collect per book?
 
----
+You can collect as many publicly available reviews as you need by increasing `results_wanted`. The Actor loads reviews through the Goodreads GraphQL API until it reaches your target count or runs out of reviews for the book.
+
+### Can I collect reviews for multiple books at once?
+
+Yes. Add several Goodreads book reviews page URLs to the `startUrls` field and the Actor processes them in one run.
+
+### Do I need a Goodreads account?
+
+No. The Actor uses the same public API that powers the reviews page and does not require login credentials or a browser.
+
+### What should I do if some fields are missing?
+
+Some reviews may not show a rating, date, or helpful count. Reviewers can post reviews without a star rating, and short reviews may have no likes. Check several results before assuming the Actor failed.
+
+### Is it legal to scrape Goodreads?
+
+Scraping public web data can be legal, but you are responsible for complying with applicable laws, website terms, and privacy rules.
+
+## Related Actors
+
+- [Goodreads Books Scraper](https://apify.com/shahidirfan/goodreads-book-scraper) - Collect book details and metadata from Goodreads.
+- [Goodreads Quotes](https://apify.com/shahidirfan/goodreads-quotes) - Extract popular book quotes from Goodreads.
+- [Open Library Book Finder](https://apify.com/shahidirfan/open-library-book-finder) - Find and collect book data from Open Library.
 
 ## Support
 
-For issues, feature requests, or custom scraping needs, please contact support through the Apify Console.
-
-### Resources
-
-- [Apify Documentation](https://docs.apify.com/)
-- [API Reference](https://docs.apify.com/api/v2)
-- [How Scheduling Works](https://docs.apify.com/schedules)
-
----
+For issues, feature requests, or custom Actor work, use the Issues tab on the Actor page or contact the developer through Apify.
 
 ## Legal Notice
 
-This tool is designed for research and legitimate data collection purposes. Users are responsible for ensuring their data collection activities comply with the target website's terms of service and relevant local laws.
+This Actor is designed for legitimate data collection from publicly available Goodreads pages. Users are responsible for using the data responsibly and complying with applicable laws and website terms.

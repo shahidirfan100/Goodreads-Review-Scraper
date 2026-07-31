@@ -1,94 +1,99 @@
 {
-  "actorSpecification": 1,
-  "fields": {
-    "type": "object",
-    "properties": {
-      "reviewer_name": {
-        "type": "string"
-      },
-      "rating": {
-        "type": [
-          "number",
-          "null"
-        ]
-      },
-      "date": {
-        "type": [
-          "string",
-          "null"
-        ]
-      },
-      "review_text": {
-        "type": [
-          "string",
-          "null"
-        ]
-      },
-      "helpful_count": {
-        "type": [
-          "number",
-          "null"
-        ]
-      },
-      "review_url": {
-        "type": [
-          "string",
-          "null"
-        ]
-      },
-      "book_url": {
-        "type": "string"
-      }
-    },
-    "additionalProperties": true
-  },
-  "views": {
-    "overview": {
-      "title": "Overview",
-      "transformation": {
-        "fields": [
-          "reviewer_name",
-          "rating",
-          "date",
-          "review_text",
-          "helpful_count",
-          "review_url",
-          "book_url"
-        ]
-      },
-      "display": {
-        "component": "table",
+    "actorSpecification": 1,
+    "fields": {
+        "type": "object",
         "properties": {
-          "reviewer_name": {
-            "label": "Reviewer",
-            "format": "text"
-          },
-          "rating": {
-            "label": "Rating",
-            "format": "number"
-          },
-          "date": {
-            "label": "Date",
-            "format": "date"
-          },
-          "review_text": {
-            "label": "Review",
-            "format": "text"
-          },
-          "helpful_count": {
-            "label": "Helpful",
-            "format": "number"
-          },
-          "review_url": {
-            "label": "Review URL",
-            "format": "text"
-          },
-          "book_url": {
-            "label": "Book URL",
-            "format": "text"
-          }
+            "review_id": {
+                "type": "string"
+            },
+            "reviewer_name": {
+                "type": ["string", "null"]
+            },
+            "reviewer_profile_url": {
+                "type": ["string", "null"]
+            },
+            "rating": {
+                "type": ["number", "null"]
+            },
+            "date": {
+                "type": ["string", "null"]
+            },
+            "review_text": {
+                "type": ["string", "null"]
+            },
+            "helpful_count": {
+                "type": ["number", "null"]
+            },
+            "comment_count": {
+                "type": ["number", "null"]
+            },
+            "review_url": {
+                "type": ["string", "null"]
+            },
+            "book_url": {
+                "type": "string"
+            },
+            "book_title": {
+                "type": ["string", "null"]
+            },
+            "book_id": {
+                "type": ["string", "null"]
+            }
+        },
+        "additionalProperties": true
+    },
+    "views": {
+        "overview": {
+            "title": "Overview",
+            "transformation": {
+                "fields": [
+                    "reviewer_name",
+                    "rating",
+                    "date",
+                    "review_text",
+                    "helpful_count",
+                    "comment_count",
+                    "review_url",
+                    "book_url"
+                ]
+            },
+            "display": {
+                "component": "table",
+                "properties": {
+                    "reviewer_name": {
+                        "label": "Reviewer",
+                        "format": "text"
+                    },
+                    "rating": {
+                        "label": "Rating",
+                        "format": "number"
+                    },
+                    "date": {
+                        "label": "Date",
+                        "format": "date"
+                    },
+                    "review_text": {
+                        "label": "Review",
+                        "format": "text"
+                    },
+                    "helpful_count": {
+                        "label": "Helpful",
+                        "format": "number"
+                    },
+                    "comment_count": {
+                        "label": "Comments",
+                        "format": "number"
+                    },
+                    "review_url": {
+                        "label": "Review URL",
+                        "format": "text"
+                    },
+                    "book_url": {
+                        "label": "Book URL",
+                        "format": "text"
+                    }
+                }
+            }
         }
-      }
     }
-  }
 }

@@ -1,448 +1,444 @@
-// Goodreads Review Scraper - Playwright Chrome implementation
 import { Actor, log } from 'apify';
-import { PlaywrightCrawler, Dataset } from 'crawlee';
+import * as cheerio from 'cheerio';
+import { Impit } from 'impit';
+import { CookieJar } from 'tough-cookie';
+
+const GRAPHQL_ENDPOINT = 'https://kxbwmqov6jgg3daaamb744ycu4.appsync-api.us-east-1.amazonaws.com/graphql';
+const GRAPHQL_API_KEY = 'da2-xpgsdydkbregjhpr6ejzqdhuwy';
+const REVIEWS_PER_PAGE = 30;
+const MAX_RETRIES = 4;
+const MAX_PAGINATION_GUARD = 10000;
+const INTERNAL_CONCURRENCY = 3;
+const REQUEST_TIMEOUT_MS = 60000;
+
+const BOOK_QUERY = `query getBookByLegacyId($legacyBookId: Int!) {
+    getBookByLegacyId(legacyId: $legacyBookId) {
+        id
+        legacyId
+        title
+        work {
+            id
+        }
+    }
+}`;
+
+const REVIEWS_QUERY = `query getReviews($filters: BookReviewsFilterInput!, $pagination: PaginationInput) {
+    getReviews(filters: $filters, pagination: $pagination) {
+        totalCount
+        pageInfo {
+            __typename
+            prevPageToken
+            nextPageToken
+        }
+        edges {
+            node {
+                id
+                rating
+                createdAt
+                likeCount
+                commentCount
+                text
+                creator {
+                    id
+                    name
+                    webUrl
+                }
+                shelving {
+                    webUrl
+                }
+            }
+        }
+    }
+}`;
+
+const formatReviewDate = (value) => {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+        return null;
+    }
+    try {
+        return new Intl.DateTimeFormat('en-US', {
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric',
+            timeZone: 'UTC',
+        }).format(new Date(value));
+    } catch {
+        return null;
+    }
+};
+
+const decodeEntities = (value) => {
+    if (typeof value !== 'string') {
+        return null;
+    }
+    return cheerio.load(value).root().text();
+};
+
+const normalizeText = (value) => {
+    if (typeof value !== 'string') {
+        return null;
+    }
+    const cleaned = value.replace(/\s+/g, ' ').trim();
+    return cleaned || null;
+};
+
+const htmlToText = (html) => {
+    if (typeof html !== 'string' || !html.trim()) {
+        return null;
+    }
+    const withBreaks = html.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li|h[1-6]|blockquote|ul|ol|tr)>/gi, '\n');
+    const $ = cheerio.load(withBreaks, null, false);
+    const text = $.root()
+        .text()
+        .replace(/\r/g, '')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    return text || null;
+};
+
+const extractBookId = (url) => {
+    const match = String(url).match(/book\/show\/(\d+)/);
+    return match ? Number(match[1]) : null;
+};
+
+const mapReviewNode = (node, { inputUrl, book }) => {
+    if (!node || typeof node !== 'object') {
+        return null;
+    }
+    if (!node.shelving && !(Number(node.rating) > 0)) {
+        return null;
+    }
+    return {
+        review_id: normalizeText(node.id),
+        reviewer_name: normalizeText(decodeEntities(node.creator?.name)),
+        reviewer_profile_url: normalizeText(node.creator?.webUrl),
+        rating: Number.isFinite(node.rating) ? node.rating : null,
+        date: formatReviewDate(node.createdAt),
+        review_text: htmlToText(node.text),
+        helpful_count: Number.isFinite(node.likeCount) ? node.likeCount : 0,
+        comment_count: Number.isFinite(node.commentCount) ? node.commentCount : 0,
+        review_url: normalizeText(node.shelving?.webUrl),
+        book_url: inputUrl,
+        book_title: normalizeText(decodeEntities(book?.title)),
+        book_id: normalizeText(book?.id),
+    };
+};
+
+const resolveApolloNode = (apolloState, ref) => {
+    if (!ref) {
+        return null;
+    }
+    const node = apolloState[ref];
+    if (!node) {
+        return null;
+    }
+    // Apollo cache uses `__ref` keys to reference entities by id.
+    // eslint-disable-next-line no-underscore-dangle
+    const creatorRef = node.creator?.__ref;
+    // eslint-disable-next-line no-underscore-dangle
+    const shelvingRef = node.shelving?.__ref;
+    return {
+        ...node,
+        creator: creatorRef ? apolloState[creatorRef] : node.creator,
+        shelving: shelvingRef ? apolloState[shelvingRef] : node.shelving,
+    };
+};
+
+const extractReviewsFromNextData = (html) => {
+    const match = String(html).match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+    if (!match) {
+        return null;
+    }
+    try {
+        const json = JSON.parse(match[1]);
+        const apolloState = json?.props?.pageProps?.apolloState || {};
+        const connection = apolloState?.ROOT_QUERY?.getReviews;
+        if (!connection || !Array.isArray(connection.edges)) {
+            return null;
+        }
+        const edges = connection.edges
+            .map((edge) => {
+                // Apollo cache uses `__ref` keys to reference entities by id.
+                // eslint-disable-next-line no-underscore-dangle
+                const nodeRef = edge?.node?.__ref;
+                return { node: resolveApolloNode(apolloState, nodeRef) };
+            })
+            .filter((edge) => edge.node);
+        return {
+            edges,
+            pageInfo: connection.pageInfo,
+            totalCount: connection.totalCount,
+        };
+    } catch {
+        return null;
+    }
+};
 
 await Actor.init();
 
 const input = (await Actor.getInput()) || {};
-const BUILD_MARKER = 'date-fix-2026-02-11';
-log.info(`Build marker: ${BUILD_MARKER}`);
+const { startUrls = [], results_wanted = 20, proxyConfiguration } = input;
 
-const {
-    start_url: START_URL = 'https://www.goodreads.com/book/show/2767052-the-catcher-in-the-rye/reviews',
-    results_wanted: RESULTS_WANTED_RAW = 20,
-    maxConcurrency = 2,
-    debugLog = false,
-    startUrls,
-    proxyConfiguration: proxyConfig,
-} = input;
+const urls = (Array.isArray(startUrls) ? startUrls : [])
+    .map((entry) => (typeof entry === 'string' ? entry : entry?.url))
+    .filter(Boolean);
 
-if (debugLog) {
-    log.setLevel(log.LEVELS.DEBUG);
+if (urls.length === 0) {
+    log.error('No startUrls provided. Add at least one Goodreads book reviews URL to the startUrls input.');
+    await Actor.exit();
+    process.exit(0);
 }
 
-const RESULTS_WANTED = Number.isFinite(+RESULTS_WANTED_RAW) ? Math.max(1, +RESULTS_WANTED_RAW) : 20;
+const isApifyCloud = Actor.isAtHome();
+const shouldUseApifyProxy = Boolean(proxyConfiguration?.useApifyProxy);
+const hasCustomProxyUrls = Array.isArray(proxyConfiguration?.proxyUrls) && proxyConfiguration.proxyUrls.length > 0;
 
-const proxyConfiguration = await Actor.createProxyConfiguration(proxyConfig || {
-    useApifyProxy: true,
-    apifyProxyGroups: ['RESIDENTIAL'],
+let proxyUrl;
+if ((shouldUseApifyProxy || hasCustomProxyUrls) && isApifyCloud) {
+    const proxyConf = await Actor.createProxyConfiguration({ ...proxyConfiguration });
+    proxyUrl = await proxyConf.newUrl();
+} else if (shouldUseApifyProxy && !isApifyCloud) {
+    log.info('Local run: skipping Apify Proxy because the actor is not running on the Apify Cloud.');
+}
+
+const cookieJar = new CookieJar();
+const client = new Impit({
+    browser: 'chrome',
+    ignoreTlsErrors: true,
+    timeout: REQUEST_TIMEOUT_MS,
+    cookieJar,
+    ...(proxyUrl ? { proxyUrl } : {}),
 });
 
-const crawler = new PlaywrightCrawler({
-    proxyConfiguration,
-    maxRequestRetries: 3,
-    useSessionPool: true,
-    sessionPoolOptions: {
-        maxPoolSize: 5,
-        sessionOptions: { maxUsageCount: 5 },
-    },
-    maxConcurrency,
-    requestHandlerTimeoutSecs: 180, // Extended for "Load More" loops
-    navigationTimeoutSecs: 60,
+const sleep = (ms) =>
+    new Promise((resolve) => {
+        setTimeout(resolve, ms);
+    });
 
-    // Stealth Configuration
-    browserPoolOptions: {
-        useFingerprints: true,
-        fingerprintOptions: {
-            fingerprintGeneratorOptions: {
-                browsers: ['chrome'],
-                devices: ['desktop'],
-                locales: ['en-US'],
-            },
-        },
-    },
+const buildGraphqlHeaders = (referer) => ({
+    accept: 'application/json',
+    'accept-language': 'en-US,en;q=0.9',
+    'content-type': 'application/json',
+    'x-api-key': GRAPHQL_API_KEY,
+    origin: 'https://www.goodreads.com',
+    referer,
+    'sec-ch-ua-mobile': '?0',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'cross-site',
+    'upgrade-insecure-requests': '',
+    'sec-fetch-user': '',
+});
 
-    preNavigationHooks: [
-        async ({ page }) => {
-            // Block heavy resources and tracking
-            await page.route('**/*', (route) => {
-                const request = route.request();
-                const type = request.resourceType();
-                const url = request.url();
-
-                // Block heavy content
-                if (['image', 'media', 'font', 'stylesheet'].includes(type) && !url.includes('goodreads')) {
-                    // Be careful with stylesheets, goodreads needs them for layout-dependent text visibility sometimes, 
-                    // but purely text-based extraction might be fine. 
-                    // Let's safe-list goodreads CSS if we block it, but usually blocking all external is safer.
-                    // The user requested to "make playwright light", so we block aggressively.
-                }
-
-                if (['image', 'media', 'font'].includes(type)) {
-                    return route.abort();
-                }
-
-                // Block known trackers/ads
-                if (url.includes('amazon-ad-system') ||
-                    url.includes('googletagservices') ||
-                    url.includes('google-analytics') ||
-                    url.includes('doubleclick') ||
-                    url.includes('facebook') ||
-                    url.includes('criteo') ||
-                    url.includes('scorecardresearch')) {
-                    return route.abort();
-                }
-
-                return route.continue();
-            });
-
-            // Hide webdriver
-            await page.addInitScript(() => {
-                Object.defineProperty(navigator, 'webdriver', { get: () => false });
-            });
-        },
-    ],
-
-    async requestHandler({ page, request }) {
-        log.info(`Processing: ${request.url}`);
-
-        await page.waitForLoadState('domcontentloaded');
-
-        // Wait for first batch of reviews to actually appear in the DOM
+const gql = async (query, variables, referer) => {
+    let lastError;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
-            await page.waitForSelector('article.ReviewCard', { timeout: 15000 });
-        } catch (e) {
-            log.warning('Timed out waiting for ReviewCard selector. The page might be empty or blocked.');
+            const response = await client.fetch(GRAPHQL_ENDPOINT, {
+                method: 'POST',
+                headers: buildGraphqlHeaders(referer),
+                body: JSON.stringify({ query, variables }),
+            });
+
+            const retryAfter = Number(response.headers.get('retry-after'));
+            const waitFor = retryAfter > 0 ? retryAfter * 1000 : attempt * 1500 + Math.random() * 1000;
+
+            if (response.status === 403) {
+                log.warning(
+                    `GraphQL API rejected the request (403). Retrying in ${Math.round(waitFor / 1000)}s (attempt ${attempt}/${MAX_RETRIES}).`,
+                );
+                await sleep(waitFor);
+                continue;
+            }
+
+            if (response.status === 429) {
+                log.warning(
+                    `GraphQL API rate limited. Retrying in ${Math.round(waitFor / 1000)}s (attempt ${attempt}/${MAX_RETRIES}).`,
+                );
+                await sleep(waitFor);
+                continue;
+            }
+
+            if (response.status === 408 || response.status >= 500) {
+                log.warning(`GraphQL API server error ${response.status}. Retrying in ${Math.round(waitFor / 1000)}s.`);
+                await sleep(waitFor);
+                continue;
+            }
+
+            const body = await response.text();
+            let json;
+            try {
+                json = JSON.parse(body);
+            } catch {
+                lastError = new Error('Invalid JSON response');
+                log.warning(`GraphQL API returned invalid JSON (${body.slice(0, 200)}). Retrying.`);
+                await sleep(attempt * 1000);
+                continue;
+            }
+
+            if (json?.errors?.length && !json?.data) {
+                lastError = new Error(json.errors.map((e) => e.message).join('; '));
+                log.warning(`GraphQL API error: ${lastError.message}. Retrying.`);
+                await sleep(attempt * 1000);
+                continue;
+            }
+
+            return json;
+        } catch (error) {
+            lastError = error;
+            if (attempt < MAX_RETRIES) {
+                const wait = attempt * 1000 + Math.random() * 500;
+                log.warning(`GraphQL request failed (${error.message}). Retrying in ${Math.round(wait / 1000)}s.`);
+                await sleep(wait);
+            }
+        }
+    }
+    throw new Error(`All ${MAX_RETRIES} GraphQL requests failed: ${lastError?.message}`);
+};
+
+const fetchReviewsPageFromGraphql = async (workId, pagination, referer) => {
+    const result = await gql(
+        REVIEWS_QUERY,
+        {
+            filters: { resourceType: 'WORK', resourceId: workId },
+            pagination,
+        },
+        referer,
+    );
+    return result?.data?.getReviews || null;
+};
+
+const fetchReviewsFromHtmlFallback = async (url) => {
+    try {
+        const response = await client.fetch(url);
+        if (!response.ok) {
+            return null;
+        }
+        const html = await response.text();
+        return extractReviewsFromNextData(html);
+    } catch (error) {
+        log.warning(`HTML fallback failed for ${url}: ${error.message}`);
+        return null;
+    }
+};
+
+const collectBookReviews = async (inputUrl) => {
+    const legacyBookId = extractBookId(inputUrl);
+    if (!legacyBookId) {
+        log.warning(`Could not parse a Goodreads book id from URL: ${inputUrl}`);
+        return 0;
+    }
+
+    log.info(`Resolving book details for legacy id ${legacyBookId}.`);
+    const bookData = await gql(BOOK_QUERY, { legacyBookId }, inputUrl);
+    const book = bookData?.data?.getBookByLegacyId;
+    const workId = book?.work?.id;
+    if (!workId) {
+        log.warning(`Could not resolve the work for book id ${legacyBookId} at ${inputUrl}.`);
+        return 0;
+    }
+
+    log.info(`Collecting up to ${results_wanted} reviews for "${book.title}".`);
+    const seenIds = new Set();
+    const records = [];
+    let after;
+    let guard = 0;
+
+    while (records.length < results_wanted && guard < MAX_PAGINATION_GUARD) {
+        guard++;
+        let connection = null;
+        try {
+            connection = await fetchReviewsPageFromGraphql(
+                workId,
+                {
+                    limit: REVIEWS_PER_PAGE,
+                    ...(after ? { after } : {}),
+                },
+                inputUrl,
+            );
+        } catch (error) {
+            log.warning(`GraphQL review fetch failed (${error.message}). Trying the HTML fallback for the first page.`);
         }
 
-        // Helper to remove any and all overlays that might block interactions
-        const cleanOverlays = async () => {
-            await page.evaluate(() => {
-                const overlays = document.querySelectorAll('.Overlay, [class*="Overlay"], [class*="Modal"], [class*="onboarding"]');
-                overlays.forEach(el => el.remove());
-                document.body.style.overflow = 'auto'; // Re-enable scrolling if modal disabled it
-            }).catch(() => { });
-        };
-
-        await cleanOverlays();
-
-        let savedCount = 0;
-        const seenIds = new Set();
-        let loopCount = 0;
-        const MAX_LOOPS = 50;
-        let stalledPaginationAttempts = 0;
-
-        while (savedCount < RESULTS_WANTED && loopCount < MAX_LOOPS) {
-            loopCount++;
-            log.info(`Scraping loop ${loopCount}, saved so far: ${savedCount}`);
-
-            // API-first extraction with DOM fallback.
-            const reviews = await page.evaluate(() => {
-                const extracted = [];
-                const seenInBatch = new Set();
-
-                const monthDateRegex = /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2},\s+\d{4}\b/i;
-                const numericDateRegex = /\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/;
-
-                const normalizeString = (value) => {
-                    if (typeof value !== 'string') return null;
-                    const cleaned = value.replace(/\s+/g, ' ').trim();
-                    return cleaned || null;
-                };
-
-                const findDateInText = (value) => {
-                    const text = normalizeString(value);
-                    if (!text) return null;
-                    const monthMatch = text.match(monthDateRegex);
-                    if (monthMatch) return monthMatch[0];
-                    const numericMatch = text.match(numericDateRegex);
-                    if (numericMatch) return numericMatch[0];
-                    return null;
-                };
-
-                const formatTimestamp = (value) => {
-                    const numericValue = typeof value === 'string' ? Number(value) : value;
-                    if (typeof numericValue !== 'number' || !Number.isFinite(numericValue) || numericValue <= 0) return null;
-                    try {
-                        return new Intl.DateTimeFormat('en-US', {
-                            month: 'short',
-                            day: 'numeric',
-                            year: 'numeric',
-                            timeZone: 'UTC',
-                        }).format(new Date(numericValue));
-                    } catch {
-                        return null;
-                    }
-                };
-
-                const htmlToText = (value) => {
-                    const text = normalizeString(value);
-                    if (!text) return null;
-
-                    if (!/[<>]/.test(text)) return text;
-
-                    const parser = document.createElement('div');
-                    parser.innerHTML = text;
-                    return normalizeString(parser.textContent);
-                };
-
-                // Priority 1: __NEXT_DATA__ / Apollo state (API-first)
-                try {
-                    const nextDataScript = document.querySelector('script#__NEXT_DATA__');
-                    if (nextDataScript?.textContent) {
-                        const nextData = JSON.parse(nextDataScript.textContent);
-                        const apolloState = nextData?.props?.pageProps?.apolloState || {};
-                        const rootQuery = apolloState?.ROOT_QUERY || {};
-                        const reviewsConnection =
-                            rootQuery?.getReviews
-                            || Object.entries(rootQuery).find(([key, value]) =>
-                                /^getReviews\b/.test(key) && Array.isArray(value?.edges)
-                            )?.[1];
-                        const edges = Array.isArray(reviewsConnection?.edges) ? reviewsConnection.edges : [];
-
-                        for (const edge of edges) {
-                            const ref = edge?.node?.__ref;
-                            if (!ref) continue;
-
-                            const review = apolloState[ref];
-                            if (!review) continue;
-
-                            const userRef = review?.creator?.__ref;
-                            const user = userRef ? apolloState[userRef] : null;
-                            const reviewerName = normalizeString(user?.name);
-                            if (!reviewerName) continue;
-
-                            const reviewUrl = normalizeString(review?.shelving?.webUrl);
-                            const id = reviewUrl || normalizeString(review?.id) || `${reviewerName}-${review?.createdAt || ''}`;
-                            if (!id || seenInBatch.has(id)) continue;
-                            seenInBatch.add(id);
-
-                            extracted.push({
-                                id,
-                                reviewerName,
-                                rating: typeof review?.rating === 'number' ? review.rating : null,
-                                date: formatTimestamp(review?.createdAt),
-                                text: htmlToText(review?.text),
-                                url: reviewUrl && reviewUrl.includes('/review/show/') ? reviewUrl : null,
-                                helpfulCount: Number.isFinite(review?.likeCount) ? review.likeCount : 0,
-                                source: 'next_data',
-                            });
-                        }
-                    }
-                } catch {
-                    // Keep crawling using DOM extraction fallback.
-                }
-
-                const reviewCards = document.querySelectorAll('article.ReviewCard');
-
-                reviewCards.forEach((card, idx) => {
-                    const name = normalizeString(card.querySelector('.ReviewerProfile__name a, [data-testid="name"]')?.innerText);
-
-                    const ratingLabel = card.querySelector('.RatingStars')?.getAttribute('aria-label'); // "Rating 4 out of 5"
-                    const ratingMatch = ratingLabel?.match(/Rating (\d+(\.\d+)?) out of 5/);
-                    const rating = ratingMatch ? parseFloat(ratingMatch[1]) : null;
-
-                    const timeDateRaw = card.querySelector('time[datetime]')?.getAttribute('datetime');
-                    let date = timeDateRaw ? formatTimestamp(new Date(timeDateRaw).getTime()) : null;
-
-                    if (!date) {
-                        const dateCandidates = [
-                            card.querySelector('.ReviewCard__contentHeader a')?.innerText,
-                            card.querySelector('.ReviewCard__contentHeader span')?.innerText,
-                            card.querySelector('[data-testid="contentHeader"] a')?.innerText,
-                            card.querySelector('[data-testid="contentHeader"] span')?.innerText,
-                            card.querySelector('[data-testid*="date" i]')?.innerText,
-                            card.innerText,
-                        ];
-                        for (const candidate of dateCandidates) {
-                            const parsedDate = findDateInText(candidate);
-                            if (parsedDate) {
-                                date = parsedDate;
-                                break;
-                            }
-                        }
-                    }
-
-                    // Prioritize full text if available
-                    let text = card.querySelector('.ReviewText__content--full')?.innerText;
-                    if (!text) {
-                        text = card.querySelector('.ReviewText__content')?.innerText;
-                    }
-
-                    // Helpful Count (Likes)
-                    let helpfulCount = 0;
-                    const statsButtons = card.querySelectorAll('.SocialFooter__stats button, [class*="SocialFooter"] button');
-                    statsButtons.forEach(btn => {
-                        const btnText = btn.innerText || '';
-                        if (btnText.includes('likes') || btnText.includes('like')) {
-                            const countMatch = btnText.match(/(\d+)/);
-                            if (countMatch) {
-                                helpfulCount = parseInt(countMatch[1], 10);
-                            }
-                        }
-                    });
-
-                    const urlPath = card.querySelector('.ReviewCard__content a[href*="/review/show"]')?.getAttribute('href');
-                    const url = urlPath ? new URL(urlPath, document.location.origin).href : null;
-
-                    // Stable ID: Use URL or combined name/rating/index (avoid Date.now)
-                    const id = url || `review-${name || 'unknown'}-${idx}`;
-
-                    if (name && !seenInBatch.has(id)) {
-                        seenInBatch.add(id);
-                        extracted.push({
-                            id,
-                            reviewerName: name,
-                            rating,
-                            date,
-                            text,
-                            url,
-                            helpfulCount,
-                            source: 'dom'
-                        });
-                    }
-                });
-
-                return extracted;
-            });
-
-            // Process new reviews
-            const newReviews = [];
-            for (const r of reviews) {
-                if (!seenIds.has(r.id)) {
-                    seenIds.add(r.id);
-                    const normalizedDate = typeof r.date === 'string' && r.date.trim()
-                        ? r.date.trim()
-                        : null;
-
-                    newReviews.push({
-                        reviewer_name: r.reviewerName,
-                        rating: r.rating,
-                        date: normalizedDate,
-                        review_text: r.text,
-                        helpful_count: r.helpfulCount,
-                        review_url: r.url,
-                        book_url: request.url
-                    });
-                }
+        if (!connection) {
+            if (records.length === 0) {
+                connection = await fetchReviewsFromHtmlFallback(inputUrl);
             }
-
-            if (newReviews.length > 0) {
-                const remaining = RESULTS_WANTED - savedCount;
-                const toSave = newReviews.slice(0, Math.max(0, remaining));
-                if (toSave.length > 0) {
-                    await Dataset.pushData(toSave);
-                    savedCount += toSave.length;
-                    log.info(`Saved ${toSave.length} new reviews from total extracted ${newReviews.length}. Total saved: ${savedCount}`);
-                }
-            } else {
-                log.info('No new reviews found in this loop.');
-            }
-
-            if (newReviews.length > 0) {
-                stalledPaginationAttempts = 0;
-            }
-
-            if (savedCount >= RESULTS_WANTED) break;
-
-            // Pagination: Click "Show more reviews" (or navigate next) until results end
-            try {
-                await cleanOverlays(); // Ensure nothing is blocking right before click
-
-                const loadMoreBtn = page
-                    .locator('button:has-text("Show more reviews"), button[data-testid="loadMore"], button[class*="Button"]:has-text("Show more")')
-                    .first();
-                const nextPageLink = page.locator('a[rel="next"], a[aria-label*="next"], button[aria-label*="next"]');
-                const loadMoreVisible = await loadMoreBtn.isVisible().catch(() => false);
-
-                if (loadMoreVisible) {
-                    log.info('Clicking "Show more reviews"...');
-
-                    const knownIdsSnapshot = Array.from(seenIds);
-
-                    await loadMoreBtn.scrollIntoViewIfNeeded();
-                    try {
-                        // Attempt a forceful click via Playwright, then fallback to JS click
-                        await loadMoreBtn.click({ timeout: 5000, force: true });
-                    } catch (err) {
-                        log.warning(`Click failed: ${err.message}. Trying direct JS click.`);
-                        await page.evaluate(() => {
-                            const btn = Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('Show more reviews') || b.innerText.includes('Show more'));
-                            if (btn) btn.click();
-                        });
-                    }
-
-                    const newContentAppeared = await page
-                        .waitForFunction(
-                            (knownIds) => {
-                                const cards = Array.from(document.querySelectorAll('article.ReviewCard'));
-
-                                const ids = cards
-                                    .map((card, idx) => {
-                                        const urlPath = card
-                                            .querySelector('.ReviewCard__content a[href*="/review/show"]')
-                                            ?.getAttribute('href');
-                                        const name = card.querySelector('.ReviewerProfile__name a, [data-testid="name"]')
-                                            ?.innerText;
-                                        const id = urlPath
-                                            ? new URL(urlPath, document.location.origin).href
-                                            : name
-                                                ? `review-${name}-${idx}`
-                                                : null;
-                                        return id;
-                                    })
-                                    .filter(Boolean);
-
-                                if (ids.length > knownIds.length) return true;
-                                return ids.some((id) => !knownIds.includes(id));
-                            },
-                            knownIdsSnapshot,
-                            { timeout: 15000 }
-                        )
-                        .catch(() => false);
-
-                    if (!newContentAppeared) {
-                        stalledPaginationAttempts++;
-                        log.warning('Pagination click did not surface new review cards; retrying.');
-
-                        if (stalledPaginationAttempts >= 3) {
-                            log.info('Stopping pagination after repeated empty attempts.');
-                            break;
-                        }
-
-                        await page.waitForTimeout(1500);
-                        continue;
-                    }
-
-                    stalledPaginationAttempts = 0;
-                    await page.waitForTimeout(800);
-                    continue;
-                }
-
-                // Fallback: plain next link if present
-                if (await nextPageLink.isVisible().catch(() => false)) {
-                    log.info('Navigating to the next reviews page...');
-                    await Promise.all([
-                        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null),
-                        nextPageLink.click({ timeout: 5000 }),
-                    ]);
-                    stalledPaginationAttempts = 0;
-                    await page.waitForTimeout(1000);
-                    continue;
-                } else {
-                    log.info('No more reviews to load.');
-                    break;
-                }
-            } catch (e) {
-                log.warning('Pagination failed: ' + e.message);
+            if (!connection) {
+                log.warning(
+                    `No review data available for ${inputUrl}. Stopping pagination with ${records.length} reviews saved.`,
+                );
                 break;
             }
         }
 
-        log.info(`Finished processing ${request.url}. Final count: ${savedCount}`);
-    },
+        const edges = Array.isArray(connection.edges) ? connection.edges : [];
+        if (edges.length === 0) {
+            break;
+        }
 
-    failedRequestHandler({ request }, error) {
-        log.error(`Request ${request.url} failed: ${error.message}`);
-    },
-});
+        const newRecords = [];
+        for (const edge of edges) {
+            const node = edge?.node;
+            if (!node || !node.id) {
+                continue;
+            }
+            if (seenIds.has(node.id)) {
+                continue;
+            }
+            seenIds.add(node.id);
+            const mapped = mapReviewNode(node, { inputUrl, book });
+            if (mapped) {
+                newRecords.push(mapped);
+            }
+        }
 
-const initial = [];
-if (Array.isArray(startUrls) && startUrls.length) {
-    initial.push(...startUrls);
-} else if (START_URL) {
-    initial.push(START_URL);
-}
+        if (newRecords.length > 0) {
+            const remaining = results_wanted - records.length;
+            const batch = newRecords.slice(0, remaining);
+            records.push(...batch);
+            await Actor.pushData(batch);
+        }
 
-await crawler.run(initial);
+        log.info(
+            `Saved ${Math.min(records.length, results_wanted)}/${results_wanted} reviews for "${book.title}" (total available: ${connection.totalCount ?? 'unknown'}).`,
+        );
+
+        if (records.length >= results_wanted) {
+            break;
+        }
+
+        const nextToken = connection.pageInfo?.nextPageToken;
+        if (!nextToken) {
+            break;
+        }
+        after = nextToken;
+    }
+
+    return records.length;
+};
+
+let totalSaved = 0;
+let processed = 0;
+let nextUrlIndex = 0;
+
+const processUrl = async () => {
+    while (nextUrlIndex < urls.length) {
+        const inputUrl = urls[nextUrlIndex++];
+        processed++;
+        try {
+            const saved = await collectBookReviews(inputUrl);
+            totalSaved += saved;
+            log.info(`Finished ${inputUrl}. Saved ${saved} reviews.`);
+        } catch (error) {
+            log.error(`Failed to process ${inputUrl}: ${error.message}`);
+        }
+    }
+};
+
+const workers = Array.from({ length: Math.min(INTERNAL_CONCURRENCY, urls.length) }, () => processUrl());
+await Promise.all(workers);
+
+log.info(`Extraction complete. Processed ${processed} URLs, saved ${totalSaved} reviews in total.`);
 await Actor.exit();
