@@ -4,13 +4,14 @@
 
 Goodreads runs a Next.js frontend backed by an AWS AppSync GraphQL API. The
 same API that powers the reviews page can be called directly over HTTP with a
-public client-side API key embedded in the public JavaScript bundle. No login,
+public client-side API key published in the page bootstrap data. The key is read
+from each supplied Goodreads page at runtime because it can change. No login,
 cookies, or browser are required.
 
 - **Endpoint**: `https://kxbwmqov6jgg3daaamb744ycu4.appsync-api.us-east-1.amazonaws.com/graphql`
 - **Method**: POST
-- **Auth**: API key header `X-Api-Key: da2-xpgsdydkbregjhpr6ejzqdhuwy` (public client key, no signing)
-- **Headers**: `Content-Type: application/json`, `X-Api-Key`
+- **Auth**: Public client key from `__NEXT_DATA__.props.pageProps.apiKey` (no signing)
+- **Headers**: `Content-Type: application/json`, `X-Api-Key` populated from the current page
 - **Pagination**: cursor-based via `PaginationInput { after, before, limit }` with `pageInfo.nextPageToken` / `pageInfo.prevPageToken`
 - **Field count**: 16+ on each review node (vs 7 collected by the old HTML actor)
 
@@ -119,6 +120,10 @@ resolved to the work id with query 1.
 
 ## Behavior notes
 
+- Goodreads publishes the current public AppSync client key in
+  `__NEXT_DATA__.props.pageProps.apiKey`; a previously hardcoded key began
+  returning HTTP 401 Unauthorized. The actor reads the key from each page before
+  making GraphQL requests.
 - The GraphQL response can include a partial `errors` array (for example
   `RESOURCE_NOT_FOUND` on `commentCount` for removed reviews) while still
   returning valid `data`. Handle with `errorPolicy: "all"` semantics - keep the

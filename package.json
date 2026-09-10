@@ -4,9 +4,9 @@
     "description": "Goodreads review scraper using the Goodreads GraphQL API.",
     "type": "module",
     "dependencies": {
-        "apify": "^3.5.2",
+        "apify": "^3.7.2",
         "cheerio": "^1.2.0",
-        "impit": "^0.14.3",
+        "impit": "^0.14.5",
         "tough-cookie": "^6.0.2"
     },
     "scripts": {
