@@ -10,7 +10,7 @@
             "description": "Array of Goodreads book review page URLs",
             "editor": "requestListSources",
             "default": [],
-            "prefill": ["https://www.goodreads.com/book/show/2767052-the-catcher-in-the-rye/reviews"]
+            "prefill": [{ "url": "https://www.goodreads.com/book/show/2767052-the-catcher-in-the-rye/reviews" }]
         },
         "results_wanted": {
             "title": "Maximum number of reviews",
